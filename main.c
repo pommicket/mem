@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
 		while (1) {
 			int poke = 0;
 			unsigned long poke_addr = 0;
-			unsigned addrval = 256;
+			unsigned long addrval = 256;
 			unsigned char byte;
 			int err;
 			{
@@ -136,8 +136,8 @@ int main(int argc, char **argv) {
 				}
 			}
 			
-			do {
-				char line[8];
+			{
+				char line[32];
 				if (!poke_only_mode) {
 					printf("Enter a number from 0-255 to narrow down search,\n");
 					printf("Or x to stop, and poke memory: ");
@@ -149,15 +149,19 @@ int main(int argc, char **argv) {
 					printf("Poke address (default is all candidates): ");
 					fgets(line, sizeof line, stdin);
 					sscanf(line, "%lx", &poke_addr);
-					printf("Set to (0-255): ");
 					do {
+						printf("Set to: ");
 						fgets(line, sizeof line, stdin);
-						sscanf(line, "%u", &addrval);
-					} while (addrval > 255);
+					} while (sscanf(line, "%lu", &addrval) != 1);
+				} else if (line[0] == '\'' && line[1] && line[2] == '\n') {
+					// 'a for 97, etc.
+					addrval = (unsigned char)line[1];
 				} else {
-					sscanf(line, "%u", &addrval);
+					do {
+						sscanf(line, "%lu", &addrval);
+					} while (addrval > 255);
 				}
-			} while (addrval > 255);
+			}
 			
 			byte = (unsigned char)addrval;
 			
@@ -177,13 +181,17 @@ int main(int argc, char **argv) {
 				return EXIT_FAILURE;
 			}
 			if (poke) {
+				unsigned nbytes = 1
+					+ ((addrval & 0xffffffffffffff00u) != 0)
+					+ ((addrval & 0xffffffffffff0000u) != 0) * 2
+					+ ((addrval & 0xffffffff00000000u) != 0) * 4;
 				int memfd = open(procmem_name, O_WRONLY);
 				
 				if (memfd != -1) {
 					if (poke_addr) {
 						lseek(memfd, (off_t)poke_addr, SEEK_SET);
-						write(memfd, &byte, 1);
-						printf("Writing %u to %lx.\n", byte, poke_addr);
+						write(memfd, &addrval, nbytes);
+						printf("Writing %lu (%u bytes) to %lx.\n", addrval, nbytes, poke_addr);
 					} else {
 						int lines_printed = 0;
 						unsigned long r, b, idx = 0;
@@ -192,12 +200,12 @@ int main(int argc, char **argv) {
 								if (bitset[idx>>3] & (1<<(idx&7))) {
 									unsigned long addr = ranges[r].lo + b;
 									lseek(memfd, (off_t)addr, SEEK_SET);
-									write(memfd, &byte, 1);
+									write(memfd, &addrval, nbytes);
 									if (lines_printed++ < 10) {
 										if (lines_printed == 10) {
 											printf("...\n");
 										} else {
-											printf("Writing %u to %lx.\n", byte, addr);
+											printf("Writing %lu (%u bytes) to %lx.\n", addrval, nbytes, addr);
 										}
 									}
 								}

@@ -13,9 +13,14 @@ Enter the value of a byte in memory multiple times
 (so, try changing the value/letting the value change,
 and enter it each time).
 
+You can specify a character constant with `'<ASCII character>`, e.g.
+`'a` for 97.
+
 When you've narrowed it down to a few possibilities
 (some things might be stored twice, so you can't necessarily
 always reduce it down to 1), enter `x` to switch to poking mode.
+You can poke with any (up to 64-bit) value, and it will
+write it little-endian.
 
 For clarification, see the guide below:
 
@@ -39,9 +44,9 @@ number has gotten down to something reasonable (<100), and isn't going
 down any further, enter `x` to start messing around.
 
 For the address, you can just press enter to use the default.
-Then, enter the value you want, and after a few seconds, the program should update
-accordingly. Unfortunately, you can only change the value modulo 256 (so you couldn't change
-it to something higher than 255).
+Then, enter the value you want (you can go higher than 255),
+and after a few seconds, the program should update
+accordingly.
 This isn't guaranteed to work, and there's a good chance it'll only
 half-work, but hey, it might!
 
