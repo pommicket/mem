@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <assert.h>
 
 static void read_mem(int fd, unsigned char *bitset, unsigned long bitset_off, unsigned long bytes, unsigned char addrval) {
 #define BLOCKSZ 4096
@@ -15,7 +16,6 @@ static void read_mem(int fd, unsigned char *bitset, unsigned long bitset_off, un
 		ssize_t bytes_read = read(fd, buf, bytes_to_read), b;
 		if (bytes_read < 0) {
 			// this part of block is unreadable; maybe the heap shrunk or something
-			bytes_left -= bytes_to_read;
 			bytes_read = (ssize_t)bytes_to_read;
 			memset(buf, !addrval, bytes_to_read); // make sure this gets eliminated
 		}
@@ -25,14 +25,21 @@ static void read_mem(int fd, unsigned char *bitset, unsigned long bitset_off, un
 				bitset[byte_idx >> 3] &= ~(1<<(byte_idx & 7));
 			}
 		}
+		assert((unsigned long)bytes_read <= bytes_left);
 		bytes_left -= (unsigned long)bytes_read;
 	}
 }
 
+typedef struct {
+	unsigned long lo, size;
+} AddrRange;
+
+
 int main(int argc, char **argv) {
+	static AddrRange ranges[10000];
 	int pid;
+	unsigned short nranges = 0;
 	char procmaps_name[32], procmem_name[32];
-	unsigned long stack_lo = 0, stack_hi = 0, heap_lo = 0, heap_hi = 0;
 	if (argc < 2 || atoi(argv[1]) == 0) {
 		fprintf(stderr, "Usage: %s <pid>\n", argv[0] ? argv[0] : "mem");
 		return EXIT_FAILURE;
@@ -51,13 +58,14 @@ int main(int argc, char **argv) {
 			return EXIT_FAILURE;
 		}
 		while (fgets(line, sizeof line, maps)) {
-			size_t len = strlen(line);
-			if (len < 8) continue;
-			if (strcmp(&line[len-8], "[stack]\n") == 0) {
-				sscanf(line, "%lx-%lx", &stack_lo, &stack_hi);
-			}
-			if (strcmp(&line[len-7], "[heap]\n") == 0) {
-				sscanf(line, "%lx-%lx", &heap_lo, &heap_hi);
+			unsigned long lo = 0, hi = 0;
+			char perm[8];
+			if (sscanf(line, "%lx-%lx %s", &lo, &hi, perm) == 3) {
+				if (strncmp(perm, "rw-", 3) == 0) { // only look at read,write,no-execute memory
+					AddrRange *range = &ranges[nranges++];
+					range->lo = lo;
+					range->size = hi - lo;
+				}
 			}
 		}
 		fclose(maps);
@@ -66,13 +74,20 @@ int main(int argc, char **argv) {
 	
 	{
 		int poke_only_mode = 0;
-		unsigned long stack_size = stack_hi - stack_lo, heap_size = heap_hi - heap_lo;
-		unsigned long total_size = stack_size + heap_size;
-		unsigned long bitset_bytes = total_size / 8;
+		unsigned long total_size = 0;
+		unsigned long bitset_bytes;
 		unsigned char *bitset;
 		int max_mem_MB = getenv("MEM_LIMIT") ? atoi(getenv("MEM_LIMIT")) : 1024;
-		printf("Stack size: %luMB\n", stack_size>>20);
-		printf("Heap size:  %luMB\n", heap_size>>20);
+		{
+			int r;
+			for (r = 0; r < nranges; ++r) {
+				total_size += ranges[r].size;
+			}
+		}
+		
+		bitset_bytes = (total_size + 7) / 8;
+		
+		printf("Memory size: %luMB\n", total_size>>20);
 		
 		if ((bitset_bytes >> 20) > (unsigned long)max_mem_MB) {
 			fprintf(stderr, "Need %luMB, but refusing to use more than the limit of %d.\n",
@@ -99,20 +114,22 @@ int main(int argc, char **argv) {
 				printf("%lu candidates\n", pop);
 				if (pop == 0) return 0;
 				if (pop < 10) {
+					unsigned long r, b, idx = 0;
 					printf("They are:\n");
-					for (i = 0; i < bitset_bytes; ++i) {
-						if (bitset[i]) {
-							unsigned bit;
-							for (bit = 0; bit < 8; ++bit) {
-								if (bitset[i] & (1<<bit)) {
-									unsigned long idx = 8 * i + bit;
-									unsigned long addr = 0;
-									if (idx >= stack_size)
-										addr = idx - stack_size + heap_lo;
-									else
-										addr = idx + stack_lo;
-									printf("%lx %lx %lx\n",heap_lo,stack_lo,addr);
+					for (r = 0; r < nranges; ++r) {
+						for (b = 0; b < ranges[r].size; ++b, ++idx) {
+							if (bitset[idx>>3] & (1<<(idx&7))) {
+								printf(">> %lx\n", ranges[r].lo + b);
+							#if 0
+								{
+								unsigned char B;
+								int memfd = open(procmem_name, O_RDONLY);
+								lseek(memfd, (off_t)(ranges[r].lo + b), SEEK_SET);
+								read(memfd, &B, 1);
+								printf(" - %u\n",B);
+								close(memfd);
 								}
+							#endif
 							}
 						}
 					}
@@ -169,26 +186,18 @@ int main(int argc, char **argv) {
 						printf("Writing %u to %lx.\n", byte, poke_addr);
 					} else {
 						int lines_printed = 0;
-						unsigned long i;
-						for (i = 0; i < bitset_bytes; ++i) {
-							if (bitset[i]) {
-								unsigned bit;
-								for (bit = 0; bit < 8; ++bit) {
-									if (bitset[i] & (1<<bit)) {
-										unsigned long idx = 8 * i + bit;
-										unsigned long addr = 0;
-										if (idx >= stack_size)
-											addr = idx - stack_size + heap_lo;
-										else
-											addr = idx + stack_lo;
-										lseek(memfd, (off_t)addr, SEEK_SET);
-										write(memfd, &byte, 1);
-										if (lines_printed++ < 10) {
-											if (lines_printed == 10) {
-												printf("...\n");
-											} else {
-												printf("Writing %u to %lx.\n", byte, addr);
-											}
+						unsigned long r, b, idx = 0;
+						for (r = 0; r < nranges; ++r) {
+							for (b = 0; b < ranges[r].size; ++b, ++idx) {
+								if (bitset[idx>>3] & (1<<(idx&7))) {
+									unsigned long addr = ranges[r].lo + b;
+									lseek(memfd, (off_t)addr, SEEK_SET);
+									write(memfd, &byte, 1);
+									if (lines_printed++ < 10) {
+										if (lines_printed == 10) {
+											printf("...\n");
+										} else {
+											printf("Writing %u to %lx.\n", byte, addr);
 										}
 									}
 								}
@@ -201,11 +210,13 @@ int main(int argc, char **argv) {
 			} else {
 				int memfd = open(procmem_name, O_RDONLY);
 				if (memfd != -1) {
-					lseek(memfd, (off_t)stack_lo, SEEK_SET);
-					read_mem(memfd, bitset, 0, stack_size, byte);
-					lseek(memfd, (off_t)heap_lo, SEEK_SET);
-					read_mem(memfd, bitset, stack_size, heap_size, byte);
-					
+					int r;
+					unsigned long off = 0;
+					for (r = 0; r < nranges; ++r) {
+						lseek(memfd, (off_t)ranges[r].lo, SEEK_SET);
+						read_mem(memfd, bitset, off, ranges[r].size, byte);
+						off += ranges[r].size;
+					}
 					close(memfd);
 				} else {
 					perror(procmem_name);
@@ -224,7 +235,6 @@ int main(int argc, char **argv) {
 		}
 						
 		free(bitset);
-		
 	}
 	
 	return 0;
