@@ -63,7 +63,9 @@ int main(int argc, char **argv) {
 		fclose(maps);
 	}
 	
+	
 	{
+		int poke_only_mode = 0;
 		unsigned long stack_size = stack_hi - stack_lo, heap_size = heap_hi - heap_lo;
 		unsigned long total_size = stack_size + heap_size;
 		unsigned long bitset_bytes = total_size / 8;
@@ -84,6 +86,7 @@ int main(int argc, char **argv) {
 
 		while (1) {
 			int poke = 0;
+			unsigned long poke_addr = 0;
 			unsigned addrval = 256;
 			unsigned char byte;
 			int err;
@@ -118,14 +121,21 @@ int main(int argc, char **argv) {
 			
 			do {
 				char line[8];
-				printf("Enter a number from 0-255 to narrow down search,\n");
-				printf("Or x to stop, and poke memory: ");
-				fgets(line, sizeof line, stdin);
-				if (line[0] == 'x') {
+				if (!poke_only_mode) {
+					printf("Enter a number from 0-255 to narrow down search,\n");
+					printf("Or x to stop, and poke memory: ");
+					fgets(line, sizeof line, stdin);
+				}
+				if (poke_only_mode || line[0] == 'x') {
 					poke = 1;
-					printf("Set all matches to (0-255): ");
+					poke_only_mode = 1;
+					printf("Poke address (default is all candidates): ");
+					fgets(line, sizeof line, stdin);
+					sscanf(line, "%lx", &poke_addr);
+					printf("Set to (0-255): ");
 					do {
-						scanf("%u", &addrval);
+						fgets(line, sizeof line, stdin);
+						sscanf(line, "%u", &addrval);
 					} while (addrval > 255);
 				} else {
 					sscanf(line, "%u", &addrval);
@@ -151,21 +161,36 @@ int main(int argc, char **argv) {
 			}
 			if (poke) {
 				int memfd = open(procmem_name, O_WRONLY);
+				
 				if (memfd != -1) {
-					unsigned long i;
-					for (i = 0; i < bitset_bytes; ++i) {
-						if (bitset[i]) {
-							unsigned bit;
-							for (bit = 0; bit < 8; ++bit) {
-								if (bitset[i] & (1<<bit)) {
-									unsigned long idx = 8 * i + bit;
-									unsigned long addr = 0;
-									if (idx >= stack_size)
-										addr = idx - stack_size + heap_lo;
-									else
-										addr = idx + stack_lo;
-									lseek(memfd, (off_t)addr, SEEK_SET);
-									write(memfd, &byte, 1);
+					if (poke_addr) {
+						lseek(memfd, (off_t)poke_addr, SEEK_SET);
+						write(memfd, &byte, 1);
+						printf("Writing %u to %lx.\n", byte, poke_addr);
+					} else {
+						int lines_printed = 0;
+						unsigned long i;
+						for (i = 0; i < bitset_bytes; ++i) {
+							if (bitset[i]) {
+								unsigned bit;
+								for (bit = 0; bit < 8; ++bit) {
+									if (bitset[i] & (1<<bit)) {
+										unsigned long idx = 8 * i + bit;
+										unsigned long addr = 0;
+										if (idx >= stack_size)
+											addr = idx - stack_size + heap_lo;
+										else
+											addr = idx + stack_lo;
+										lseek(memfd, (off_t)addr, SEEK_SET);
+										write(memfd, &byte, 1);
+										if (lines_printed++ < 10) {
+											if (lines_printed == 10) {
+												printf("...\n");
+											} else {
+												printf("Writing %u to %lx.\n", byte, addr);
+											}
+										}
+									}
 								}
 							}
 						}
@@ -196,8 +221,6 @@ int main(int argc, char **argv) {
 				}
 				return EXIT_FAILURE;
 			}
-			if (poke)
-				return 0;
 		}
 						
 		free(bitset);
