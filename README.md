@@ -1,5 +1,8 @@
 # memory poker! (linux only)
 
+**This tool has been superseded by https://github.com/pommicket/pokemem**
+**That one has a GUI and more features; use it instead!**
+
 Find and change a value in a process' memory!
 
 ## Usage
